@@ -32,13 +32,13 @@ public class Program {
         public string[] sources = Array.Empty<string>();
     }
 
-    [Verb("pack", HelpText = "Pack Unity package")]
+    [Verb("pack", aliases: new [] { "p" }, HelpText = "Pack Unity package")]
     class PackOptions : Options {
         [Option("icon", Required = false, HelpText = "Icon file, must be a PNG file")]
         public string? Icon { get; set; }
     }
 
-    [Verb("extract", HelpText = "Extract Unity package")]
+    [Verb("extract", aliases: new [] { "e" }, HelpText = "Extract Unity package")]
     class ExtractOptions : Options {}
 
     public static void Main(string[] args) => Parser.Default
