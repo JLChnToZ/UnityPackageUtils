@@ -17,6 +17,9 @@ Where supported verbs (sub commands) and arguments are:
 - `extract`, `e`, `unpack`: Extract Unity package
   - `-r`, `--replace`: Replace existing files if conflict
   - `-k`, `--keep`: Keep existing files if conflict
+  - `-o`, `--output`: Destination directory or Unity package
+  - `-n`, `--dryrun`: Do not write to disk
+  - `-f`, `--filter`: Glob pattern to filter files
 
 ## Licesnse
 
