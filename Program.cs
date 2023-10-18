@@ -10,7 +10,7 @@ using CommandLine;
 
 [assembly: AssemblyProduct("UnityPackageUtil")]
 [assembly: AssemblyTitle("UnityPackageUtil")]
-[assembly: AssemblyDescription("A command line tool to pack and unpack Unity packages")]
+[assembly: AssemblyDescription("A command line tool to pack and extract Unity packages")]
 [assembly: AssemblyCompany("Explosive Theorem Lab")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
 [assembly: AssemblyInformationalVersion("1.0.0")]
@@ -24,7 +24,7 @@ public class Program {
         }
 
         [Option('o', "output", Required = false, HelpText = "Destination directory or Unity package")]
-        public string Dest { get; set; }
+        public string? Dest { get; set; }
 
         [Option('n', "dryrun", Required = false, HelpText = "Do not write to disk")]
         public bool DryRun { get; set; }
@@ -33,20 +33,23 @@ public class Program {
     }
 
     [Verb("pack", HelpText = "Pack Unity package")]
-    class PackOptions : Options {}
-
-    [Verb("unpack", HelpText = "Unpack Unity package")]
-    class UnpackOptions : Options {}
-
-    public static void Main(string[] args) {
-        Parser.Default.ParseArguments<PackOptions, UnpackOptions>(args).MapResult(
-            (PackOptions opts) => { PackUnityPackage(opts); return 0; },
-            (UnpackOptions opts) => { ExtractUnityPackage(opts); return 0; },
-            errs => 1
-        );
+    class PackOptions : Options {
+        [Option("icon", Required = false, HelpText = "Icon file, must be a PNG file")]
+        public string? Icon { get; set; }
     }
 
-    private static void ExtractUnityPackage(UnpackOptions options) {
+    [Verb("extract", HelpText = "Extract Unity package")]
+    class ExtractOptions : Options {}
+
+    public static void Main(string[] args) => Parser.Default
+        .ParseArguments<PackOptions, ExtractOptions>(args)
+        .MapResult(
+            (Func<PackOptions, int>)PackUnityPackage,
+            (Func<ExtractOptions, int>)ExtractUnityPackage,
+            _ => 1
+        );
+
+    private static int ExtractUnityPackage(ExtractOptions options) {
         var destPath = options.Dest;
         foreach (var srcPath in options.sources) {
             if (string.IsNullOrEmpty(destPath))
@@ -54,9 +57,10 @@ public class Program {
             using var srcStream = File.OpenRead(srcPath);
             ExtractUnityPackage(srcStream, options.DryRun ? null : destPath);
         }
+        return 0;
     }
 
-    private static void PackUnityPackage(PackOptions options) {
+    private static int PackUnityPackage(PackOptions options) {
         var srcPath = options.sources;
         var destPath = options.Dest;
         if (string.IsNullOrEmpty(destPath)) {
@@ -78,10 +82,11 @@ public class Program {
                 };
         }
         using var destStream = options.DryRun ? Stream.Null : File.OpenWrite(destPath);
-        PackUnityPackage(srcPath, destStream);
+        PackUnityPackage(srcPath, destStream, options.Icon);
+        return 0;
     }
 
-    private static void ExtractUnityPackage(Stream stream, string destFolder) {
+    private static void ExtractUnityPackage(Stream stream, string? destFolder) {
         using var gzStream = new GZipInputStream(stream);
         using var tarStream = new TarInputStream(gzStream, Encoding.UTF8);
         var fileMap = new Dictionary<Guid, (Stream assetStream, string meta, string pathName)>();
@@ -96,7 +101,7 @@ public class Program {
             }
             if (pathSplitted.Length - offset != 2 ||
                 !Guid.TryParseExact(pathSplitted[pathSplitted.Length - 2], "N", out var guid)) {
-                Console.WriteLine($"Invalid file entry: {entry.Name}");
+                Console.WriteLine($"(Ignored) {entry.Name}");
                 continue;
             }
             fileMap.TryGetValue(guid, out var data);
@@ -129,7 +134,7 @@ public class Program {
             }
             if (data.assetStream != null && data.pathName != null && data.meta != null) {
                 fileMap.Remove(guid);
-                Console.WriteLine($"Extracting {data.pathName} (GUID: {guid})");
+                Console.WriteLine($"{data.pathName} (GUID: {guid})");
                 if (string.IsNullOrEmpty(destFolder)) continue;
                 var assetPath = Path.Combine(destFolder, data.pathName);
                 RecursiveCreateDirectory(assetPath);
@@ -142,7 +147,7 @@ public class Program {
         }
     }
 
-    private static void PackUnityPackage(string[] srcPaths, Stream dest) {
+    private static void PackUnityPackage(string[]? srcPaths, Stream dest, string? iconPath = null) {
         var srcDirectoryPath = FindUnityProjectRootPath(srcPaths);
         using var gzStream = new GZipOutputStream(dest);
         using var tarStream = new TarOutputStream(gzStream, Encoding.UTF8);
@@ -176,6 +181,7 @@ public class Program {
                 ProcessSingleEntry(tarStream, fileInfo, srcDirectoryPath, dirInfoStack, processedFiles);
             }
         }
+        CheckAndWritePNGFile(tarStream, iconPath, ".icon.png");
     }
 
     private static void ProcessSingleEntry(TarOutputStream tarStream, FileSystemInfo entry, string srcDirectoryPath, Stack<FileSystemInfo> dirInfostack, HashSet<string> processedFiles) {
@@ -194,7 +200,7 @@ public class Program {
             if (!line.StartsWith("guid:", StringComparison.OrdinalIgnoreCase)) continue;
             contents.Dispose();
             var guidStr = line.Substring(5).Trim();
-            Console.WriteLine($"Packing {Path.GetRelativePath(srcDirectoryPath, entry.FullName)} (GUID: {Guid.ParseExact(guidStr, "N")})");
+            Console.WriteLine($"{Path.GetRelativePath(srcDirectoryPath, entry.FullName)} (GUID: {Guid.ParseExact(guidStr, "N")})");
             WritePathName(tarStream, srcDirectoryPath, entry, guidStr);
             if (entry is DirectoryInfo subDir)
                 dirInfostack.Push(subDir);
@@ -226,16 +232,39 @@ public class Program {
         stream.CloseEntry();
     }
 
+    private static void CheckAndWritePNGFile(TarOutputStream stream, string? srcPath, string destPath) {
+        if (string.IsNullOrEmpty(srcPath)) return;
+        if (!File.Exists(srcPath)) {
+            Console.WriteLine($"File not found: {srcPath}");
+            return;
+        }
+        using var fs = new FileStream(srcPath, FileMode.Open, FileAccess.Read);
+        if (fs.Length < 8 ||
+            fs.ReadByte() != 0x89 ||
+            fs.ReadByte() != 0x50 ||
+            fs.ReadByte() != 0x4E ||
+            fs.ReadByte() != 0x47) {
+            Console.WriteLine("Invalid PNG file, icon will not be included.");
+            return;
+        }
+        fs.Seek(0, SeekOrigin.Begin);
+        WriteFile(stream, destPath, fs);
+    }
+
     private static void WriteFile(TarOutputStream stream, string destPath, FileInfo srcFile) {
-        var entry = TarEntry.CreateTarEntry(destPath);
-        entry.Size = srcFile.Length;
-        stream.PutNextEntry(entry);
         using var fs = srcFile.OpenRead();
-        fs.CopyTo(stream);
+        WriteFile(stream, destPath, fs);
+    }
+
+    private static void WriteFile(TarOutputStream stream, string destPath, Stream srcStream) {
+        var entry = TarEntry.CreateTarEntry(destPath);
+        entry.Size = srcStream.Length;
+        stream.PutNextEntry(entry);
+        srcStream.CopyTo(stream);
         stream.CloseEntry();
     }
 
-    private static string FindUnityProjectRootPath(string[] filePaths) {
+    private static string FindUnityProjectRootPath(string[]? filePaths) {
         ArraySegment<string> rootPathSplitted = default;
         var cwd = Directory.GetCurrentDirectory();
         if (filePaths == null || filePaths.Length == 0)
