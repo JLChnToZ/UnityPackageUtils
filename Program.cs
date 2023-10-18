@@ -215,7 +215,7 @@ public class Program {
         }
     }
 
-    private static void PackUnityPackage(string[]? srcPaths, Stream dest ,string? iconPath, Glob[]? filters) {
+    private static void PackUnityPackage(string[]? srcPaths, Stream dest, string? iconPath, Glob[]? filters) {
         var srcDirectoryPath = FindUnityProjectRootPath(srcPaths);
         using var gzStream = new GZipOutputStream(dest);
         using var tarStream = new TarOutputStream(gzStream, Encoding.UTF8);
