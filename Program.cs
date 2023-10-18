@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using ICSharpCode.SharpZipLib.GZip;
 using ICSharpCode.SharpZipLib.Tar;
 using CommandLine;
@@ -218,35 +219,24 @@ public class Program {
         var srcDirectoryPath = FindUnityProjectRootPath(srcPaths);
         using var gzStream = new GZipOutputStream(dest);
         using var tarStream = new TarOutputStream(gzStream, Encoding.UTF8);
-        var dirInfoStack = new Stack<FileSystemInfo>();
+        var pendingStack = new Stack<FileSystemInfo>();
         var processedFiles = new HashSet<string>();
         if (srcPaths != null && srcPaths.Length > 0)
             foreach (var path in srcPaths) {
                 if (File.Exists(path))
-                    dirInfoStack.Push(new FileInfo(path));
+                    pendingStack.Push(new FileInfo(path));
                 else if (Directory.Exists(path))
-                    dirInfoStack.Push(new DirectoryInfo(path));
+                    pendingStack.Push(new DirectoryInfo(path));
             }
         else
-            dirInfoStack.Push(new DirectoryInfo(Directory.GetCurrentDirectory()));
-        while (dirInfoStack.Count > 0) {
-            var info = dirInfoStack.Pop();
+            pendingStack.Push(new DirectoryInfo(Directory.GetCurrentDirectory()));
+        while (pendingStack.Count > 0) {
+            var info = pendingStack.Pop();
             if (info is DirectoryInfo dirInfo)
                 foreach (var entry in dirInfo.EnumerateFileSystemInfos())
-                    ProcessSingleEntry(tarStream, entry, srcDirectoryPath, dirInfoStack, filters, processedFiles);
-            else if (info is FileInfo fileInfo) {
-                if (string.Equals(fileInfo.Extension, ".meta", StringComparison.OrdinalIgnoreCase)) {
-                    var nonMetaFile = Path.GetFileNameWithoutExtension(fileInfo.FullName);
-                    fileInfo = new FileInfo(nonMetaFile);
-                    if (!fileInfo.Exists) {
-                        dirInfo = new DirectoryInfo(nonMetaFile);
-                        if (dirInfo.Exists)
-                            ProcessSingleEntry(tarStream, dirInfo, srcDirectoryPath, dirInfoStack, filters, processedFiles);
-                        continue;
-                    }
-                }
-                ProcessSingleEntry(tarStream, fileInfo, srcDirectoryPath, dirInfoStack, filters, processedFiles);
-            }
+                    ProcessSingleEntry(tarStream, entry, srcDirectoryPath, pendingStack, filters, processedFiles);
+            else if (info is FileInfo)
+                ProcessSingleEntry(tarStream, info, srcDirectoryPath, pendingStack, filters, processedFiles);
         }
         CheckAndWritePNGFile(tarStream, iconPath, ".icon.png");
     }
@@ -255,45 +245,62 @@ public class Program {
         TarOutputStream tarStream,
         FileSystemInfo entry,
         string srcDirectoryPath,
-        Stack<FileSystemInfo> dirInfostack,
+        Stack<FileSystemInfo> pendingStack,
         Glob[]? filters,
         HashSet<string> processedFiles
     ) {
         if (string.Equals(entry.Extension, ".meta", StringComparison.OrdinalIgnoreCase) &&
-            entry.Attributes.HasFlag(FileAttributes.Normal)) return;
-        if (!processedFiles.Add(entry.FullName)) return;
-        var metaFile = new FileInfo($"{entry.FullName}.meta");
-        if (!metaFile.Exists) {
-            if (entry is DirectoryInfo subDir)
-                dirInfostack.Push(subDir);
+            entry.Attributes.HasFlag(FileAttributes.Normal)) {
+            var nonMetaFile = Path.GetFileNameWithoutExtension(entry.FullName);
+            if (processedFiles.Contains(nonMetaFile)) return;
+            if (Directory.Exists(nonMetaFile))
+                pendingStack.Push(new DirectoryInfo(nonMetaFile));
+            else if (File.Exists(nonMetaFile))
+                pendingStack.Push(new FileInfo(nonMetaFile));
             return;
         }
-        var contents = new StreamReader(metaFile.OpenRead(), Encoding.UTF8);
-        string? line;
-        while ((line = contents.ReadLine()) != null) {
-            if (!line.StartsWith("guid:", StringComparison.OrdinalIgnoreCase)) continue;
-            contents.Dispose();
-            var guidStr = line.Substring(5).Trim();
-            if (!Guid.TryParseExact(guidStr, "N", out var guid)) {
-                Console.WriteLine($"(Ignored) {entry.Name} - Invalid GUID: {guidStr}");
-                continue;
-            }
-            var relPath = Path.GetRelativePath(srcDirectoryPath, entry.FullName);
-            if (IsFiltered(relPath, filters)) {
-                Console.WriteLine($"(Skipped) {relPath} (GUID: {guid})");
-                continue;
-            }
-            Console.WriteLine($"{relPath} (GUID: {guid})");
-            WritePathName(tarStream, srcDirectoryPath, entry, guidStr);
-            if (entry is DirectoryInfo subDir)
-                dirInfostack.Push(subDir);
-            else if (entry is FileInfo file) {
-                WriteFile(tarStream, $"{guidStr}/asset", file);
-                WriteFile(tarStream, $"{guidStr}/asset.meta", metaFile);
-            }
-            break;
+        if (!processedFiles.Add(entry.FullName)) return;
+        if (entry is DirectoryInfo) {
+            pendingStack.Push(entry);
+            return;
         }
-        contents.Dispose();
+        var relPath = Path.GetRelativePath(srcDirectoryPath, entry.FullName).Replace('\\', '/');
+        if (!TryFindGuidFromFile(entry.FullName, out var metaFile, out var guid)) {
+            Console.WriteLine($"(Ignored) {relPath} (GUID not found or invalid)");
+            return;
+        }
+        if (IsFiltered(relPath, filters)) {
+            Console.WriteLine($"(Skipped) {relPath} (GUID: {guid})");
+            return;
+        }
+        Console.WriteLine($"{relPath} (GUID: {guid})");
+        var guidStr = guid.ToString("N");
+        using (var sr = new StreamWriter(new MemoryStream(), Encoding.UTF8, leaveOpen: true)) {
+            sr.Write(relPath);
+            sr.Flush();
+            var ms = sr.BaseStream;
+            ms.Seek(0, SeekOrigin.Begin);
+            WriteFile(tarStream, $"{guidStr}/pathname", ms);
+        }
+        if (entry is FileInfo file) {
+            WriteFile(tarStream, $"{guidStr}/asset", file);
+            WriteFile(tarStream, $"{guidStr}/asset.meta", metaFile);
+        }
+    }
+
+    private static bool TryFindGuidFromFile(string file, [NotNullWhen(true)] out FileInfo? metaFile, out Guid guid) {
+        metaFile = new FileInfo($"{file}.meta");
+        if (metaFile.Exists) {
+            using var contents = new StreamReader(metaFile.OpenRead(), Encoding.UTF8);
+            string? line;
+            while ((line = contents.ReadLine()) != null) {
+                if (line.StartsWith("guid:", StringComparison.OrdinalIgnoreCase))
+                    return Guid.TryParseExact(line.Substring(5).Trim(), "N", out guid);
+            }
+        }
+        metaFile = null;
+        guid = default;
+        return false;
     }
 
     private static void RecursiveCreateDirectory(string assetPath) {
@@ -303,16 +310,6 @@ public class Program {
             destPath = Path.Combine(destPath, pathSplitted[i]);
             if (!Directory.Exists(destPath)) Directory.CreateDirectory(destPath);
         }
-    }
-
-    private static void WritePathName(TarOutputStream stream, string srcDirectoryPath, FileSystemInfo info, string guid) {
-        var pathName = info.FullName.Substring(srcDirectoryPath.Length + 1).Replace(Path.DirectorySeparatorChar, '/');
-        var pathNameBytes = Encoding.UTF8.GetBytes(pathName);
-        var entry = TarEntry.CreateTarEntry($"{guid}/pathname");
-        entry.Size = pathNameBytes.Length;
-        stream.PutNextEntry(entry);
-        stream.Write(pathNameBytes, 0, pathNameBytes.Length);
-        stream.CloseEntry();
     }
 
     private static void CheckAndWritePNGFile(TarOutputStream stream, string? srcPath, string destPath) {
