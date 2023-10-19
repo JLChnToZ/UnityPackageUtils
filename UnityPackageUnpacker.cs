@@ -55,14 +55,14 @@ namespace JLChnToZ.UnityPackageUtil {
                     case "asset": {
                             var ms = new MemoryStream();
                             tarStream.CopyEntryContents(ms);
-                            ms.Position = 0;
+                            ms.Seek(0, SeekOrigin.Begin);
                             data.assetStream = ms;
                             break;
                         }
                     case "asset.meta": {
                             using var ms = new MemoryStream();
                             tarStream.CopyEntryContents(ms);
-                            ms.Position = 0;
+                            ms.Seek(0, SeekOrigin.Begin);
                             using var streamReader = new StreamReader(ms, Encoding.UTF8);
                             data.meta = streamReader.ReadToEnd();
                             break;
@@ -70,7 +70,7 @@ namespace JLChnToZ.UnityPackageUtil {
                     case "pathname": {
                             using var ms = new MemoryStream();
                             tarStream.CopyEntryContents(ms);
-                            ms.Position = 0;
+                            ms.Seek(0, SeekOrigin.Begin);
                             using var streamReader = new StreamReader(ms, Encoding.UTF8);
                             data.pathName = streamReader.ReadLine();
                             break;

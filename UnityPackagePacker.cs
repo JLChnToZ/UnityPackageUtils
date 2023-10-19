@@ -173,12 +173,17 @@ namespace JLChnToZ.UnityPackageUtil {
                         if (!ValidateEntry(entry.path, entry.guid)) continue;
                         assetEntries[entry.guid] = entry;
                     }
+                    continue;
                 }
-                if (info is DirectoryInfo dirInfo)
+                if (info is DirectoryInfo dirInfo) {
                     foreach (var entry in dirInfo.EnumerateFileSystemInfos())
                         VaildateFileEntry(entry);
-                else if (info is FileInfo)
+                    continue;
+                }
+                if (info is FileInfo) {
                     VaildateFileEntry(info);
+                    continue;
+                }
             }
         }
 
