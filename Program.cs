@@ -14,8 +14,8 @@ using DotNet.Globbing;
 [assembly: AssemblyTitle("UnityPackageUtil")]
 [assembly: AssemblyDescription("A command line tool to pack and extract Unity packages")]
 [assembly: AssemblyCompany("Explosive Theorem Lab")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
-[assembly: AssemblyInformationalVersion("1.0.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyInformationalVersion("1.0.1")]
 
 public class Program {
     class Options {
@@ -44,6 +44,12 @@ public class Program {
             }
         }
 
+        [Option('r', "replace", Required = false, HelpText = "Replace existing files if conflict")]
+        public bool ReplaceAll { get; set; }
+
+        [Option('k', "keep", Required = false, HelpText = "Keep existing files if conflict")]
+        public bool KeepAll { get; set; }
+
         public Glob[]? GlobFilters {
             get {
                 if (globs == null && filters.Length > 0) {
@@ -54,23 +60,18 @@ public class Program {
                 return globs;
             }
         }
+
+        public bool? CanReplace => DryRun ? false : ReplaceAll ? true : KeepAll ? false : null;
     }
 
-    [Verb("pack", aliases: new [] { "p" }, HelpText = "Pack Unity package")]
+    [Verb("pack", aliases: new [] { "p", "merge" }, HelpText = "Pack or merge Unity package")]
     class PackOptions : Options {
         [Option("icon", Required = false, HelpText = "Icon file, must be a PNG file")]
         public string? Icon { get; set; }
     }
 
     [Verb("extract", aliases: new [] { "e", "unpack" }, HelpText = "Extract Unity package")]
-    class ExtractOptions : Options {
-
-        [Option('r', "replace", Required = false, HelpText = "Replace existing files if conflict")]
-        public bool ReplaceAll { get; set; }
-
-        [Option('k', "keep", Required = false, HelpText = "Keep existing files if conflict")]
-        public bool KeepAll { get; set; }
-    }
+    class ExtractOptions : Options {}
 
     public static void Main(string[] args) => Parser.Default
         .ParseArguments<PackOptions, ExtractOptions>(args)
@@ -90,10 +91,7 @@ public class Program {
                 srcStream,
                 options.DryRun ? null : destPath,
                 options.GlobFilters,
-                options.DryRun ? false :
-                options.ReplaceAll ? true :
-                options.KeepAll ? false :
-                null
+                options.CanReplace
             );
         }
         return 0;
@@ -120,12 +118,34 @@ public class Program {
                     Path.Combine(cwd, "Packages"),
                 };
         }
+        var opts = PreparePackUnityPackage(srcPath, options.GlobFilters, options.CanReplace);
         using var destStream = options.DryRun ? Stream.Null : File.OpenWrite(destPath);
-        PackUnityPackage(srcPath, destStream, options.Icon, options.GlobFilters);
+        PackUnityPackage(opts, destStream, options.Icon);
         return 0;
     }
 
     private static void ExtractUnityPackage(Stream stream, string? destFolder, Glob[]? filters, bool? replace) {
+        foreach (var (guid, assetStream, meta, pathName) in EnumerateUnityPackage(stream)) {
+            if (IsFiltered(pathName, filters)) {
+                Console.WriteLine($"(Skipped) {pathName} (GUID: {guid})");
+                continue;
+            }
+            if (string.IsNullOrEmpty(destFolder)) {
+                Console.WriteLine($"{pathName} (GUID: {guid})");
+                continue;
+            }
+            var assetPath = Path.Combine(destFolder, pathName);
+            RecursiveCreateDirectory(assetPath);
+            if (File.Exists(assetPath) && !PromptReplace(ref replace, $"File already exists: {assetPath}")) continue;
+            Console.WriteLine($"{pathName} (GUID: {guid})");
+            using var outfs = new FileStream(assetPath, FileMode.OpenOrCreate, FileAccess.Write);
+            assetStream.CopyTo(outfs);
+            assetStream.Dispose();
+            File.WriteAllText($"{assetPath}.meta", meta, Encoding.UTF8);
+        }
+    }
+
+    private static IEnumerable<(Guid guid, Stream assetStream, string meta, string pathName)> EnumerateUnityPackage(Stream stream) {
         using var gzStream = new GZipInputStream(stream);
         using var tarStream = new TarInputStream(gzStream, Encoding.UTF8);
         var fileMap = new Dictionary<Guid, (Stream? assetStream, string? meta, string? pathName)>();
@@ -171,134 +191,129 @@ public class Program {
             }
             if (data.assetStream != null && data.pathName != null && data.meta != null) {
                 fileMap.Remove(guid);
-                if (IsFiltered(data.pathName, filters)) {
-                    Console.WriteLine($"(Skipped) {data.pathName} (GUID: {guid})");
-                    continue;
-                }
-                if (string.IsNullOrEmpty(destFolder)) {
-                    Console.WriteLine($"{data.pathName} (GUID: {guid})");
-                    continue;
-                }
-                var assetPath = Path.Combine(destFolder, data.pathName);
-                RecursiveCreateDirectory(assetPath);
-                if (File.Exists(assetPath)) {
-                    if (!replace.HasValue) {
-                        Console.WriteLine($"File already exists: {assetPath}, replace?");
-                        Console.Write("(Y = Yes, N = No, Shift+Y = Yes to All, Shift+N = No to All) ");
-                        while (true) {
-                            var key = Console.ReadKey(true);
-                            switch (key.Key) {
-                                case ConsoleKey.Y:
-                                    Console.WriteLine("Y");
-                                    if (key.Modifiers.HasFlag(ConsoleModifiers.Shift)) replace = true;
-                                    goto replaceOnce;
-                                case ConsoleKey.N:
-                                    Console.WriteLine("N");
-                                    if (key.Modifiers.HasFlag(ConsoleModifiers.Shift)) replace = false;
-                                    goto skipOnce;
-                            }
-                        }
-                        skipOnce: continue;
-                        replaceOnce:;
-                    } else if (!replace.Value) {
-                        Console.WriteLine($"(Skipped) {data.pathName} (GUID: {guid})");
-                        continue;
-                    }
-                }
-                Console.WriteLine($"{data.pathName} (GUID: {guid})");
-                using var outfs = new FileStream(assetPath, FileMode.OpenOrCreate, FileAccess.Write);
-                data.assetStream.CopyTo(outfs);
-                data.assetStream.Dispose();
-                File.WriteAllText($"{assetPath}.meta", data.meta, Encoding.UTF8);
+                yield return (guid, data.assetStream, data.meta, data.pathName);
             } else
                 fileMap[guid] = data;
         }
     }
 
-    private static void PackUnityPackage(string[]? srcPaths, Stream dest, string? iconPath, Glob[]? filters) {
-        var srcDirectoryPath = FindUnityProjectRootPath(srcPaths);
-        using var gzStream = new GZipOutputStream(dest);
-        using var tarStream = new TarOutputStream(gzStream, Encoding.UTF8);
-        var pendingStack = new Stack<FileSystemInfo>();
-        var processedFiles = new HashSet<string>();
+    private static PackUnityPackageOptions PreparePackUnityPackage(string[]? srcPaths, Glob[]? filters, bool? replace) {
+        var opts = new PackUnityPackageOptions {
+            entriesWillBeAdded = new(),
+            entriesWillBeAdded2 = new(),
+            pathGuidMap = new(),
+            srcDirectoryPath = FindUnityProjectRootPath(srcPaths),
+            pendingStack = new(),
+            filters = filters,
+            processedFiles = new(StringComparer.OrdinalIgnoreCase),
+            replace = replace,
+        };
         if (srcPaths != null && srcPaths.Length > 0)
             foreach (var path in srcPaths) {
                 if (File.Exists(path))
-                    pendingStack.Push(new FileInfo(path));
+                    opts.pendingStack.Push((new FileInfo(path), false));
                 else if (Directory.Exists(path))
-                    pendingStack.Push(new DirectoryInfo(path));
+                    opts.pendingStack.Push((new DirectoryInfo(path), false));
             }
         else
-            pendingStack.Push(new DirectoryInfo(Directory.GetCurrentDirectory()));
-        while (pendingStack.Count > 0) {
-            var info = pendingStack.Pop();
+            opts.pendingStack.Push((new DirectoryInfo(Directory.GetCurrentDirectory()), false));
+        while (opts.pendingStack.Count > 0) {
+            var (info, isUnityPackage) = opts.pendingStack.Pop();
+            if (isUnityPackage) {
+                using var fs = (info as FileInfo)!.OpenRead();
+                foreach (var (guid, assetStream, meta, pathName) in EnumerateUnityPackage(fs)) {
+                    if (!ValidateEntry(pathName, guid, ref opts)) continue;
+                    opts.entriesWillBeAdded2[guid] = (pathName, assetStream, meta);
+                }
+            }
             if (info is DirectoryInfo dirInfo)
                 foreach (var entry in dirInfo.EnumerateFileSystemInfos())
-                    ProcessSingleEntry(tarStream, entry, srcDirectoryPath, pendingStack, filters, processedFiles);
+                    VaildateFileEntry(entry, ref opts);
             else if (info is FileInfo)
-                ProcessSingleEntry(tarStream, info, srcDirectoryPath, pendingStack, filters, processedFiles);
+                VaildateFileEntry(info, ref opts);
+        }
+        return opts;
+    }
+
+    private static void PackUnityPackage(PackUnityPackageOptions opts, Stream dest, string? iconPath) {
+        using var gzStream = new GZipOutputStream(dest);
+        using var tarStream = new TarOutputStream(gzStream, Encoding.UTF8);
+        foreach (var entry in opts.entriesWillBeAdded) {
+            Console.WriteLine($"{entry.Value.path} (GUID: {entry.Key})");
+            var guidStr = entry.Key.ToString("N");
+            WriteFile(tarStream, $"{guidStr}/pathname", entry.Value.path);
+            WriteFile(tarStream, $"{guidStr}/asset", entry.Value.entry);
+            WriteFile(tarStream, $"{guidStr}/asset.meta", entry.Value.meta);
+        }
+        foreach (var entry in opts.entriesWillBeAdded2) {
+            Console.WriteLine($"{entry.Value.path} (GUID: {entry.Key})");
+            var guidStr = entry.Key.ToString("N");
+            WriteFile(tarStream, $"{guidStr}/pathname", entry.Value.path);
+            WriteFile(tarStream, $"{guidStr}/asset", entry.Value.data);
+            WriteFile(tarStream, $"{guidStr}/asset.meta", entry.Value.meta);
         }
         CheckAndWritePNGFile(tarStream, iconPath, ".icon.png");
     }
 
-    private static void ProcessSingleEntry(
-        TarOutputStream tarStream,
-        FileSystemInfo entry,
-        string srcDirectoryPath,
-        Stack<FileSystemInfo> pendingStack,
-        Glob[]? filters,
-        HashSet<string> processedFiles
-    ) {
+    private static void VaildateFileEntry(FileSystemInfo entry, ref PackUnityPackageOptions opts) {
         if (string.Equals(entry.Extension, ".meta", StringComparison.OrdinalIgnoreCase) &&
             entry.Attributes.HasFlag(FileAttributes.Normal)) {
-            var nonMetaFile = Path.GetFileNameWithoutExtension(entry.FullName);
-            if (processedFiles.Contains(nonMetaFile)) return;
-            if (Directory.Exists(nonMetaFile))
-                pendingStack.Push(new DirectoryInfo(nonMetaFile));
-            else if (File.Exists(nonMetaFile))
-                pendingStack.Push(new FileInfo(nonMetaFile));
+            var nonmeta = Path.GetFileNameWithoutExtension(entry.FullName);
+            if (opts.processedFiles.Contains(nonmeta)) return;
+            if (Directory.Exists(nonmeta))
+                opts.pendingStack.Push((new DirectoryInfo(nonmeta), false));
+            else if (File.Exists(nonmeta))
+                opts.pendingStack.Push((new FileInfo(nonmeta), false));
             return;
         }
-        if (!processedFiles.Add(entry.FullName)) return;
+        if (!opts.processedFiles.Add(entry.FullName)) return;
         if (entry is DirectoryInfo) {
-            pendingStack.Push(entry);
+            opts.pendingStack.Push((entry, false));
             return;
         }
-        var relPath = Path.GetRelativePath(srcDirectoryPath, entry.FullName).Replace('\\', '/');
-        if (!TryFindGuidFromFile(entry.FullName, out var metaFile, out var guid)) {
+        var relPath = Path.GetRelativePath(opts.srcDirectoryPath, entry.FullName).Replace('\\', '/');
+        if (!TryFindGuidFromFile(entry.FullName, out var meta, out var guid)) {
+            if (string.Equals(entry.Extension, ".unitypackage", StringComparison.OrdinalIgnoreCase)) {
+                opts.pendingStack.Push((entry, true));
+                return;
+            }
             Console.WriteLine($"(Ignored) {relPath} (GUID not found or invalid)");
             return;
         }
-        if (IsFiltered(relPath, filters)) {
-            Console.WriteLine($"(Skipped) {relPath} (GUID: {guid})");
-            return;
-        }
-        Console.WriteLine($"{relPath} (GUID: {guid})");
-        var guidStr = guid.ToString("N");
-        using (var sr = new StreamWriter(new MemoryStream(), Encoding.UTF8, leaveOpen: true)) {
-            sr.Write(relPath);
-            sr.Flush();
-            var ms = sr.BaseStream;
-            ms.Seek(0, SeekOrigin.Begin);
-            WriteFile(tarStream, $"{guidStr}/pathname", ms);
-        }
-        if (entry is FileInfo file) {
-            WriteFile(tarStream, $"{guidStr}/asset", file);
-            WriteFile(tarStream, $"{guidStr}/asset.meta", metaFile);
-        }
+        if (!ValidateEntry(relPath, guid, ref opts)) return;
+        opts.entriesWillBeAdded[guid] = (relPath, (entry as FileInfo)!, meta);
     }
 
-    private static bool TryFindGuidFromFile(string file, [NotNullWhen(true)] out FileInfo? metaFile, out Guid guid) {
-        metaFile = new FileInfo($"{file}.meta");
-        if (metaFile.Exists) {
-            using var contents = new StreamReader(metaFile.OpenRead(), Encoding.UTF8);
-            string? line;
-            while ((line = contents.ReadLine()) != null) {
-                if (line.StartsWith("guid:", StringComparison.OrdinalIgnoreCase))
-                    return Guid.TryParseExact(line.Substring(5).Trim(), "N", out guid);
-            }
+    private static bool ValidateEntry(string relPath, Guid guid, ref PackUnityPackageOptions opts) {
+        if (IsFiltered(relPath, opts.filters)) {
+            Console.WriteLine($"(Skipped) {relPath} (GUID: {guid})");
+            return false;
         }
-        metaFile = null;
+        if (opts.entriesWillBeAdded.TryGetValue(guid, out var data) &&
+            !PromptReplace(ref opts.replace, $"File with same GUID already exists: {data.path} (GUID: {guid})")) {
+            Console.WriteLine($"(Ignored) {relPath} (Duplicate GUID: {guid})");
+            return false;
+        }
+        if (opts.pathGuidMap.TryGetValue(relPath, out var otherGuid) && otherGuid != guid) {
+            if (!PromptReplace(ref opts.replace, $"File with same path already exists: {relPath} (GUID: {otherGuid})"))
+                return false;
+            Console.WriteLine($"(Replaced) {relPath} (GUID: {otherGuid} -> {guid})");
+            opts.entriesWillBeAdded.Remove(otherGuid);
+        }
+        opts.pathGuidMap[relPath] = guid;
+        return true;
+    }
+
+    private static bool TryFindGuidFromFile(string file, [NotNullWhen(true)] out FileInfo? meta, out Guid guid) {
+        meta = new FileInfo($"{file}.meta");
+        if (meta.Exists) {
+            using var contents = new StreamReader(meta.OpenRead(), Encoding.UTF8);
+            string? line;
+            while ((line = contents.ReadLine()) != null)
+                if (line.StartsWith("guid:", StringComparison.OrdinalIgnoreCase))
+                    return Guid.TryParseExact(line.AsSpan(5), "N", out guid);
+        }
+        meta = null;
         guid = default;
         return false;
     }
@@ -336,6 +351,15 @@ public class Program {
         WriteFile(stream, destPath, fs);
     }
 
+    private static void WriteFile(TarOutputStream stream, string destPath, string fileData) {
+        using var sr = new StreamWriter(new MemoryStream(), Encoding.UTF8, leaveOpen: true);
+        sr.Write(fileData);
+        sr.Flush();
+        var ms = sr.BaseStream;
+        ms.Seek(0, SeekOrigin.Begin);
+        WriteFile(stream, destPath, ms);
+    }
+
     private static void WriteFile(TarOutputStream stream, string destPath, Stream srcStream) {
         var entry = TarEntry.CreateTarEntry(destPath);
         entry.Size = srcStream.Length;
@@ -352,6 +376,8 @@ public class Program {
         else
             foreach (var path in filePaths) {
                 var dirPath = Path.IsPathRooted(path) ? path : Path.Combine(cwd, path);
+                if (dirPath.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase) &&
+                    !File.Exists($"{dirPath}.meta")) continue;
                 if (!Directory.Exists(dirPath)) {
                     if (File.Exists(dirPath)) dirPath = Path.GetDirectoryName(dirPath)!;
                     else throw new ArgumentException($"Path not found: {dirPath}");
@@ -369,6 +395,7 @@ public class Program {
                 if (i <= 0) throw new ArgumentException("No common root path found");
                 rootPathSplitted = new ArraySegment<string>(rootPathSplitted.Array, 0, i);
             }
+        if (rootPathSplitted.Array == null) return cwd;
         while (rootPathSplitted.Array != null && rootPathSplitted.Count > 0) {
             var currentDirectory = string.Join(Path.DirectorySeparatorChar, rootPathSplitted.Array, 0, rootPathSplitted.Count);
             if (IsUnityProject(currentDirectory))
@@ -389,5 +416,35 @@ public class Program {
         if (filters == null || filters.Length == 0) return false;
         foreach (var filter in filters) if (filter.IsMatch(path)) return false;
         return true;
+    }
+
+    private static bool PromptReplace(ref bool? replace, string prompt) {
+        if (replace.HasValue) return replace.Value;
+        Console.WriteLine($"{prompt}, replace?");
+        Console.Write("(Y = Yes, N = No, Shift+Y = Yes to All, Shift+N = No to All) ");
+        while (true) {
+            var key = Console.ReadKey(true);
+            switch (key.Key) {
+                case ConsoleKey.Y:
+                    Console.WriteLine("Y");
+                    if (key.Modifiers.HasFlag(ConsoleModifiers.Shift)) replace = true;
+                    return true;
+                case ConsoleKey.N:
+                    Console.WriteLine("N");
+                    if (key.Modifiers.HasFlag(ConsoleModifiers.Shift)) replace = false;
+                    return false;
+            }
+        }
+    }
+
+    ref struct PackUnityPackageOptions {
+        public Dictionary<Guid, (string path, FileInfo entry, FileInfo meta)> entriesWillBeAdded;
+        public Dictionary<Guid, (string path, Stream data, string meta)> entriesWillBeAdded2;
+        public Dictionary<string, Guid> pathGuidMap;
+        public string srcDirectoryPath;
+        public Stack<(FileSystemInfo entry, bool isUnityPackage)> pendingStack;
+        public Glob[]? filters;
+        public HashSet<string> processedFiles;
+        public bool? replace;
     }
 }
