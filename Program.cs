@@ -63,6 +63,9 @@ namespace JLChnToZ.UnityPackageUtil {
     class PackOptions : Options {
         [Option("icon", Required = false, HelpText = "Icon file, must be a PNG file")]
         public string? Icon { get; set; }
+
+        [Option('l', "level", Required = false, Default = 5, HelpText = "Compression level, 0-9")]
+        public int CompressLevel { get; set; }
     }
 
     [Verb("extract", aliases: new[] { "e", "unpack" }, HelpText = "Extract Unity package")]

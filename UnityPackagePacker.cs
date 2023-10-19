@@ -6,6 +6,7 @@ using System.Diagnostics.CodeAnalysis;
 using ICSharpCode.SharpZipLib.GZip;
 using ICSharpCode.SharpZipLib.Tar;
 using DotNet.Globbing;
+using System.IO.Compression;
 
 namespace JLChnToZ.UnityPackageUtil {
     class UnityPackagePacker : IDisposable {
@@ -18,6 +19,19 @@ namespace JLChnToZ.UnityPackageUtil {
         bool? replace;
         TarOutputStream? tarStream;
         GZipOutputStream? gzipStream;
+        int compressionLevel = 5;
+
+        public int CompressionLevel {
+            get {
+                if (gzipStream != null) compressionLevel = gzipStream.GetLevel();
+                return compressionLevel;
+            }
+            set {
+                if (value < 0 || value > 9) throw new ArgumentOutOfRangeException(nameof(value));
+                compressionLevel = value;
+                if (gzipStream != null) gzipStream.SetLevel(value);
+            }
+        }
 
         public static int Pack(PackOptions options) {
             var srcPath = options.sources;
@@ -43,7 +57,9 @@ namespace JLChnToZ.UnityPackageUtil {
             UnityPackagePacker? packer = null;
             Stream? destStream = null;
             try {
-                packer = new UnityPackagePacker(srcPath, options.GlobFilters, options.CanReplace);
+                packer = new UnityPackagePacker(srcPath, options.GlobFilters, options.CanReplace) {
+                    CompressionLevel = options.CompressLevel,
+                };
                 destStream = options.DryRun ? Stream.Null : File.OpenWrite(destPath);
                 packer.Pack(destStream, options.Icon);
             } finally {
@@ -169,6 +185,7 @@ namespace JLChnToZ.UnityPackageUtil {
         public void Pack(Stream dest, string? iconPath) {
             if (gzipStream != null || tarStream != null) Dispose();
             gzipStream = new GZipOutputStream(dest);
+            gzipStream.SetLevel(compressionLevel);
             tarStream = new TarOutputStream(gzipStream, Encoding.UTF8);
             foreach (var entry in assetEntries.Values) entry.WriteTo(tarStream);
             CheckAndWritePNGFile(iconPath, ".icon.png");
