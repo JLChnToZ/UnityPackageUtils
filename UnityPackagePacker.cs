@@ -167,8 +167,12 @@ namespace JLChnToZ.UnityPackageUtil {
                 pendingStack.Push((new DirectoryInfo(Directory.GetCurrentDirectory()), false));
             while (pendingStack.Count > 0) {
                 var (info, isUnityPackage) = pendingStack.Pop();
-                if (isUnityPackage) {
-                    using var fs = (info as FileInfo)!.OpenRead();
+                if (info is FileInfo fileInfo) {
+                    if (!isUnityPackage) {
+                        VaildateFileEntry(info);
+                        continue;
+                    }
+                    using var fs = fileInfo.OpenRead();
                     foreach (var entry in UnityPackageUnpacker.EnumerateUnityPackage(fs)) {
                         if (!ValidateEntry(entry.path, entry.guid)) continue;
                         assetEntries[entry.guid] = entry;
@@ -178,10 +182,6 @@ namespace JLChnToZ.UnityPackageUtil {
                 if (info is DirectoryInfo dirInfo) {
                     foreach (var entry in dirInfo.EnumerateFileSystemInfos())
                         VaildateFileEntry(entry);
-                    continue;
-                }
-                if (info is FileInfo) {
-                    VaildateFileEntry(info);
                     continue;
                 }
             }
