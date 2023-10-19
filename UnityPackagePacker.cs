@@ -40,9 +40,16 @@ namespace JLChnToZ.UnityPackageUtil {
                     Path.Combine(cwd, "Packages"),
                 };
             }
-            using var packer = new UnityPackagePacker(srcPath, options.GlobFilters, options.CanReplace);
-            using var destStream = options.DryRun ? Stream.Null : File.OpenWrite(destPath);
-            packer.Pack(destStream, options.Icon);
+            UnityPackagePacker? packer = null;
+            Stream? destStream = null;
+            try {
+                packer = new UnityPackagePacker(srcPath, options.GlobFilters, options.CanReplace);
+                destStream = options.DryRun ? Stream.Null : File.OpenWrite(destPath);
+                packer.Pack(destStream, options.Icon);
+            } finally {
+                packer?.Dispose();
+                destStream?.Dispose();
+            }
             return 0;
         }
 
@@ -114,6 +121,7 @@ namespace JLChnToZ.UnityPackageUtil {
                 sr.Write(str);
                 sr.Flush();
                 stream = sr.BaseStream;
+                stream.Seek(0, SeekOrigin.Begin);
             } else
                 throw new ArgumentException("Invalid argument type.", nameof(src));
             using (stream) WriteFile(stream, destPath, destStream);
