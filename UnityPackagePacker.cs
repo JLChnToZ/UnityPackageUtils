@@ -2,11 +2,9 @@ using System;
 using System.Text;
 using System.IO;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using ICSharpCode.SharpZipLib.GZip;
 using ICSharpCode.SharpZipLib.Tar;
 using DotNet.Globbing;
-using System.IO.Compression;
 
 namespace JLChnToZ.UnityPackageUtil {
     class UnityPackagePacker : IDisposable {
@@ -112,20 +110,6 @@ namespace JLChnToZ.UnityPackageUtil {
             throw new ArgumentException("No common root path found");
         }
 
-        static bool TryFindGuidFromFile(string file, [NotNullWhen(true)] out FileInfo? meta, out Guid guid) {
-            meta = new FileInfo($"{file}.meta");
-            if (meta.Exists) {
-                using var contents = new StreamReader(meta.OpenRead(), Encoding.UTF8);
-                string? line;
-                while ((line = contents.ReadLine()) != null)
-                    if (line.StartsWith("guid:", StringComparison.OrdinalIgnoreCase))
-                        return Guid.TryParseExact(line.AsSpan(5), "N", out guid);
-            }
-            meta = null;
-            guid = default;
-            return false;
-        }
-
         public static void WriteFile(object src, string destPath, TarOutputStream destStream) {
             Stream stream;
             if (src is Stream s)
@@ -194,6 +178,9 @@ namespace JLChnToZ.UnityPackageUtil {
             tarStream = new TarOutputStream(gzipStream, Encoding.UTF8);
             foreach (var entry in assetEntries.Values) entry.WriteTo(tarStream);
             CheckAndWritePNGFile(iconPath, ".icon.png");
+            tarStream.Flush();
+            gzipStream.Flush();
+            if (dest.Position < dest.Length) dest.SetLength(dest.Position); // Truncate
         }
 
         void VaildateFileEntry(FileSystemInfo entry) {
@@ -213,7 +200,7 @@ namespace JLChnToZ.UnityPackageUtil {
                 return;
             }
             var relPath = Path.GetRelativePath(srcDirectoryPath, entry.FullName).Replace('\\', '/');
-            if (!TryFindGuidFromFile(entry.FullName, out var meta, out var guid)) {
+            if (!Utils.TryFindGuidFromFile(entry.FullName, out var meta, out var guid)) {
                 if (string.Equals(entry.Extension, ".unitypackage", StringComparison.OrdinalIgnoreCase)) {
                     pendingStack.Push((entry, true));
                     return;
@@ -231,7 +218,7 @@ namespace JLChnToZ.UnityPackageUtil {
                 return false;
             }
             if (assetEntries.TryGetValue(guid, out var fileEntry) &&
-                !Utils.PromptReplace(ref replace, $"File with same GUID already exists: {fileEntry.path} (GUID: {guid})")) {
+                !Utils.PromptReplace(ref replace, $"File with same GUID already exists: {guid}\nExisting: {fileEntry.path}\nNew: {relPath}")) {
                 Console.WriteLine($"(Ignored) {relPath} (Duplicate GUID: {guid})");
                 return false;
             }

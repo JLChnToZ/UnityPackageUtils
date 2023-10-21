@@ -7,30 +7,23 @@ using ICSharpCode.SharpZipLib.Tar;
 using DotNet.Globbing;
 
 namespace JLChnToZ.UnityPackageUtil {
-    static class UnityPackageUnpacker {
+    class UnityPackageUnpacker {
+        readonly Dictionary<Guid, string> existingGuids = new();
+        readonly string? destFolder;
+        readonly Glob[]? filters;
+        bool? replace;
+
         public static int Extract(ExtractOptions options) {
             var destPath = options.Dest;
+            UnityPackageUnpacker? unpacker = null;
             foreach (var srcPath in options.sources) {
                 if (string.IsNullOrEmpty(destPath))
                     destPath = Path.GetDirectoryName(srcPath)!;
+                unpacker ??= new UnityPackageUnpacker(destPath, options.GlobFilters, options.CanReplace);
                 using var srcStream = File.OpenRead(srcPath);
-                Extract(srcStream, options.DryRun ? null : destPath, options.GlobFilters, options.CanReplace);
+                unpacker.Extract(srcStream);
             }
             return 0;
-        }
-
-        public static void Extract(Stream stream, string? destFolder, Glob[]? filters, bool? replace) {
-            foreach (var entry in EnumerateUnityPackage(stream)) {
-                if (Utils.IsFiltered(entry.path, filters)) {
-                    Console.WriteLine($"(Skipped) {entry.path} (GUID: {entry.guid})");
-                    continue;
-                }
-                if (string.IsNullOrEmpty(destFolder)) {
-                    Console.WriteLine($"{entry.path} (GUID: {entry.guid})");
-                    continue;
-                }
-                entry.WriteTo(destFolder, ref replace);
-            }
         }
 
         public static IEnumerable<AssetEntry> EnumerateUnityPackage(Stream stream) {
@@ -82,6 +75,44 @@ namespace JLChnToZ.UnityPackageUtil {
                     yield return new(guid, data.pathName, data.assetStream, data.meta);
                 } else
                     fileMap[guid] = data;
+            }
+        }
+
+        public UnityPackageUnpacker(string? destFolder, Glob[]? filters, bool? replace) {
+            this.destFolder = destFolder;
+            this.filters = filters;
+            this.replace = replace;
+            GatherDuplicateGuids();
+        }
+
+        public void Extract(Stream stream) {
+            foreach (var entry in EnumerateUnityPackage(stream)) {
+                if (Utils.IsFiltered(entry.path, filters)) {
+                    Console.WriteLine($"(Skipped) {entry.path} (GUID: {entry.guid})");
+                    continue;
+                }
+                if (string.IsNullOrEmpty(destFolder)) {
+                    Console.WriteLine($"{entry.path} (GUID: {entry.guid})");
+                    continue;
+                }
+                if (existingGuids.TryGetValue(entry.guid, out var path) &&
+                    !Utils.PromptReplace(ref replace, $"File with same GUID already exists: {entry.guid}\nExisting: {path}\nNew: {entry.path}")) {
+                    Console.WriteLine($"(Ignored) {entry.path} (Duplicate GUID: {entry.guid})");
+                    continue;
+                }
+                entry.WriteTo(destFolder, ref replace);
+            }
+        }
+
+        void GatherDuplicateGuids() {
+            if (!string.IsNullOrEmpty(destFolder) && Directory.Exists(destFolder)) {
+                foreach (var assetPath in Directory.EnumerateFiles(destFolder, "*.meta", SearchOption.AllDirectories)) {
+                    if (!Utils.TryFindGuidFromFile(assetPath[..^5], out _, out var guid)) continue;
+                    if (existingGuids.TryGetValue(guid, out var path))
+                        Console.WriteLine($"(Warning) Duplicate GUID found on destination: {guid}\nExisting: {path}\nNew: {Path.GetRelativePath(destFolder, assetPath)}");
+                    else
+                        existingGuids.Add(guid, Path.GetRelativePath(destFolder, assetPath));
+                }
             }
         }
     }
