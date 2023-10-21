@@ -100,6 +100,7 @@ namespace JLChnToZ.UnityPackageUtil {
                     Console.WriteLine($"(Ignored) {entry.path} (Duplicate GUID: {entry.guid})");
                     continue;
                 }
+                existingGuids[entry.guid] = entry.path;
                 entry.WriteTo(destFolder, ref replace);
             }
         }
