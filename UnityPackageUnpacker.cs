@@ -28,7 +28,7 @@ namespace JLChnToZ.UnityPackageUtil {
 
         public static IEnumerable<AssetEntry> EnumerateUnityPackage(Stream stream) {
             using var gzStream = new GZipInputStream(stream);
-            using var tarStream = new TarInputStream(gzStream, Encoding.UTF8);
+            using var tarStream = new TarInputStream(gzStream, Utils.UTF8NoBOMEncoding);
             var fileMap = new Dictionary<Guid, (Stream? assetStream, string? meta, string? pathName)>();
             for (TarEntry entry; (entry = tarStream.GetNextEntry()) != null;) {
                 var pathSplitted = entry.Name.Split('/', '\\');
@@ -56,7 +56,7 @@ namespace JLChnToZ.UnityPackageUtil {
                             using var ms = new MemoryStream();
                             tarStream.CopyEntryContents(ms);
                             ms.Seek(0, SeekOrigin.Begin);
-                            using var streamReader = new StreamReader(ms, Encoding.UTF8);
+                            using var streamReader = new StreamReader(ms, Utils.UTF8NoBOMEncoding);
                             data.meta = streamReader.ReadToEnd();
                             break;
                         }
@@ -64,7 +64,7 @@ namespace JLChnToZ.UnityPackageUtil {
                             using var ms = new MemoryStream();
                             tarStream.CopyEntryContents(ms);
                             ms.Seek(0, SeekOrigin.Begin);
-                            using var streamReader = new StreamReader(ms, Encoding.UTF8);
+                            using var streamReader = new StreamReader(ms, Utils.UTF8NoBOMEncoding);
                             data.pathName = streamReader.ReadLine();
                             break;
                         }

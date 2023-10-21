@@ -44,8 +44,9 @@ namespace JLChnToZ.UnityPackageUtil {
             Console.WriteLine($"{path} (GUID: {guid})");
             using var outfs = new FileStream(assetPath, FileMode.OpenOrCreate, FileAccess.Write);
             assetStream.CopyTo(outfs);
+            if (assetStream.Length < outfs.Length) outfs.SetLength(assetStream.Length);
             assetStream.Dispose();
-            File.WriteAllText($"{assetPath}.meta", meta as string, Encoding.UTF8);
+            File.WriteAllText($"{assetPath}.meta", meta as string, Utils.UTF8NoBOMEncoding);
         }
     }
 }

@@ -117,7 +117,7 @@ namespace JLChnToZ.UnityPackageUtil {
             else if (src is FileInfo file)
                 stream = file.OpenRead();
             else if (src is string str) {
-                var sr = new StreamWriter(new MemoryStream(), Encoding.UTF8, leaveOpen: true);
+                var sr = new StreamWriter(new MemoryStream(), Utils.UTF8NoBOMEncoding, leaveOpen: true);
                 sr.Write(str);
                 sr.Flush();
                 stream = sr.BaseStream;
@@ -175,7 +175,7 @@ namespace JLChnToZ.UnityPackageUtil {
             if (gzipStream != null || tarStream != null) Dispose();
             gzipStream = new GZipOutputStream(dest);
             gzipStream.SetLevel(compressionLevel);
-            tarStream = new TarOutputStream(gzipStream, Encoding.UTF8);
+            tarStream = new TarOutputStream(gzipStream, Utils.UTF8NoBOMEncoding);
             foreach (var entry in assetEntries.Values) entry.WriteTo(tarStream);
             CheckAndWritePNGFile(iconPath, ".icon.png");
             tarStream.Flush();

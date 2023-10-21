@@ -6,6 +6,8 @@ using DotNet.Globbing;
 
 namespace JLChnToZ.UnityPackageUtil {
     public static class Utils {
+        public static readonly Encoding UTF8NoBOMEncoding = new UTF8Encoding(false);
+
         public static bool IsFiltered(string path, Glob[]? filters) {
             if (filters == null || filters.Length == 0) return false;
             foreach (var filter in filters) if (filter.IsMatch(path)) return false;
@@ -15,7 +17,7 @@ namespace JLChnToZ.UnityPackageUtil {
         public static bool TryFindGuidFromFile(string file, [NotNullWhen(true)] out FileInfo? meta, out Guid guid) {
             meta = new FileInfo($"{file}.meta");
             if (meta.Exists) {
-                using var contents = new StreamReader(meta.OpenRead(), Encoding.UTF8);
+                using var contents = new StreamReader(meta.OpenRead(), UTF8NoBOMEncoding);
                 string? line;
                 while ((line = contents.ReadLine()) != null)
                     if (line.StartsWith("guid:", StringComparison.OrdinalIgnoreCase))
