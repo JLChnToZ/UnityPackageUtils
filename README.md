@@ -41,6 +41,11 @@ To merge multiple unitypackages into one, but only for .cs files:
 > UnityPackageUtil p -o Output.unitypackage -f **/*.cs -- .\Package1.unitypackage .\Package2.unitypackage
 ```
 
+To add/change preview icon for a unitypackage, but without creating a copy:
+```batch
+> UnityPackageUtil p -o .\Fancy.unitypackage --icon Path\To\Icon.png .\Fancy.unitypackage
+```
+
 ## Licesnse
 
 [MIT](LICENSE)
